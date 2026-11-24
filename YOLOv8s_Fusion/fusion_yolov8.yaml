@@ -1,0 +1,12 @@
+channels: 6
+names:
+- car
+- truck
+- bus
+- van
+- freight car
+nc: 5
+path: C:\Users\melis\Desktop\BitirmeProjesi\Dataset_Preprocessed_YOLO11
+test: test/images_rgb
+train: train/images_rgb
+val: val/images_rgb

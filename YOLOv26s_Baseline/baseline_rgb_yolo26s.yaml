@@ -1,0 +1,11 @@
+names:
+- car
+- truck
+- bus
+- van
+- freight car
+nc: 5
+path: C:\Users\melis\Desktop\BitirmeProjesi\Dataset_Preprocessed_Fusion
+test: test/images
+train: train/images
+val: val/images
