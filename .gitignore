@@ -1,22 +1,12 @@
-# Veri setleri (Gigabaytlarca görüntü yüklenmesini engeller)
-Dataset*/
-**/images*/
-**/labels/
-*.jpg
-*.jpeg
-*.png
-*.tif
+# Büyük veri setleri ve arşivler
+Dataset_Preprocessed_Fusion/
 *.zip
+*.rar
 
-# Model ağırlıkları ve büyük çıktılar (.pt dosyaları 100MB sınırını aşar)
+# Model ağırlık dosyaları (Drive'da tutuluyor)
 *.pt
 *.pth
-*.onnx
-*.engine
 
-# Python ve VS Code geçici dosyaları
+# Geçici Python ve IDE dosyaları
 __pycache__/
-*.py[cod]
-.venv/
-venv/
-.vscode/
+*.code-workspace
