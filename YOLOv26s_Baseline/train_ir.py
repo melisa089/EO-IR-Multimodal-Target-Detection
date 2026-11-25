@@ -3,6 +3,9 @@ import yaml
 import torch
 from pathlib import Path
 from ultralytics import YOLO
+import ultralytics.data.utils as data_utils
+import ultralytics.data.dataset as data_dataset
+from ultralytics.models.yolo.detect import DetectionTrainer, DetectionValidator
 
 # ==============================================================================
 # 1. VERİ SETİ VE ÇALIŞMA ORTAMI AYARLARI (RGB & Füzyon eğitimleriyle birebir aynı)
@@ -13,6 +16,26 @@ YAML_PATH = WORK_DIR / "baseline_ir_yolo26s.yaml"
 SAVE_PROJECT_DIR = WORK_DIR / "results"
 RUN_NAME = "baseline_ir_yolo26s"
 MODEL_WEIGHTS = "yolo26s.pt"
+
+
+# ==============================================================================
+# 2. images_ir KLASÖRÜNÜ labels KLASÖRÜYLE EŞLEŞTİREN PATCH
+# ==============================================================================
+_orig_img2label_paths = data_utils.img2label_paths
+
+
+def custom_img2label_paths(img_paths):
+    fixed_paths = [
+        str(Path(p).parent.parent / "images" / Path(p).name)
+        if Path(p).parent.name == "images_ir"
+        else p
+        for p in img_paths
+    ]
+    return _orig_img2label_paths(fixed_paths)
+
+
+data_utils.img2label_paths = custom_img2label_paths
+data_dataset.img2label_paths = custom_img2label_paths
 
 
 def main():
@@ -86,7 +109,7 @@ def main():
     torch.cuda.empty_cache()
 
     # ==========================================================================
-    # 2. EĞİTİM SONRASI OTOMATİK TEST SETİ DEĞERLENDİRMESİ
+    # 3. EĞİTİM SONRASI OTOMATİK TEST SETİ DEĞERLENDİRMESİ
     # ==========================================================================
     print("\n--- YOLO26s SADECE IR (UNIMODAL BASELINE) TEST SETİ SONUÇLARI ---")
     best_weights = SAVE_PROJECT_DIR / RUN_NAME / "weights" / "best.pt"

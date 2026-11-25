@@ -1,6 +1,5 @@
 import os
 import gc
-import copy
 import yaml
 import torch
 import torch.nn as nn
@@ -11,12 +10,34 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 from ultralytics import YOLO
+import ultralytics.data.utils as data_utils
+import ultralytics.data.dataset as data_dataset
 from ultralytics.nn.tasks import DetectionModel
 from ultralytics.models.yolo.detect import DetectionValidator
 from ultralytics.data.dataset import YOLODataset
 
 # ==============================================================================
-# 0. ÖZEL MİMARİ SINIFLARI (PyTorch .pt Dosyalarını Yüklemek İçin Zorunludur)
+# 0. images_ir ETİKET EŞLEŞTİRME PATCH'İ (Tekil IR Testi İçin Zorunlu)
+# ==============================================================================
+_orig_img2label_paths = data_utils.img2label_paths
+
+
+def custom_img2label_paths(img_paths):
+    fixed_paths = [
+        str(Path(p).parent.parent / "images" / Path(p).name)
+        if Path(p).parent.name == "images_ir"
+        else p
+        for p in img_paths
+    ]
+    return _orig_img2label_paths(fixed_paths)
+
+
+data_utils.img2label_paths = custom_img2label_paths
+data_dataset.img2label_paths = custom_img2label_paths
+
+
+# ==============================================================================
+# 1. ÖZEL MİMARİ SINIFLARI (PyTorch .pt Dosyalarını Yüklemek İçin Zorunlu)
 # ==============================================================================
 class MidFusionBlock(nn.Module):
     def __init__(self, channels):
@@ -117,19 +138,18 @@ class TwoStreamYOLOv26MidFusion(BaseTwoStreamMidFusion): pass
 
 
 # ==============================================================================
-# 1. KULLANICI AYARLARI
+# 2. KULLANICI AYARLARI VE MODEL YOLLARI
 # ==============================================================================
 DATASET_DIR = Path(r"C:\Users\melis\Desktop\BitirmeProjesi\Dataset_Preprocessed_Fusion")
-OUTPUT_DIR = Path(r"C:\Users\melis\Desktop\BitirmeModelEgitimleri\Compare\test_official")
+OUTPUT_DIR = Path(r"C:\Users\melis\Desktop\BitirmeModelEgitimleri\Compare\test_final_ablation")
 
 MODELS = {
+    "YOLO26s-RGB":     r"C:\Users\melis\Desktop\BitirmeModelEgitimleri\YOLOv26s_Baseline\results\baseline_rgb_yolo26s\weights\best.pt",
+    "YOLO26s-IR":      r"C:\Users\melis\Desktop\BitirmeModelEgitimleri\YOLOv26s_Baseline\results\baseline_ir_yolo26s\weights\best.pt",
     "YOLOv8s-Fusion":  r"C:\Users\melis\Desktop\BitirmeModelEgitimleri\YOLOv8s_Fusion\results\mid_fusion_yolov8s\weights\best.pt",
     "YOLO11s-Fusion":  r"C:\Users\melis\Desktop\BitirmeModelEgitimleri\YOLOv11s_Fusion\results\mid_fusion_yolo11s\weights\best.pt",
     "YOLO12s-Fusion":  r"C:\Users\melis\Desktop\BitirmeModelEgitimleri\YOLOv12s_Fusion\results\mid_fusion_yolo12s\weights\best.pt",
     "YOLO26s-Fusion":  r"C:\Users\melis\Desktop\BitirmeModelEgitimleri\YOLOv26s_Fusion\results\mid_fusion_yolo26s\weights\best.pt",
-    # Tekil eğitim modellerini tamamladığında buraya ekleyebilirsin:
-    # "YOLO26s-RGB":   r"C:\Users\melis\Desktop\BitirmeProjesi\weights\yolo26s_rgb.pt",
-    # "YOLO26s-IR":    r"C:\Users\melis\Desktop\BitirmeProjesi\weights\yolo26s_ir.pt",
 }
 
 CLASS_NAMES = ['car', 'truck', 'bus', 'van', 'freight_car']
@@ -141,18 +161,12 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ==============================================================================
-# 2. RESMİ LETTERBOX DESTEKLİ MULTIMODAL VALIDATOR
+# 3. RESMİ LETTERBOX DESTEKLİ MULTIMODAL VALIDATOR
 # ==============================================================================
 class MultimodalYOLODataset(YOLODataset):
     def __init__(self, *args, modality="both", **kwargs):
         self.modality = modality
         super().__init__(*args, **kwargs)
-
-    def img2label_paths(self, img_paths):
-        return [
-            str(Path(p).parent.parent / "labels" / f"{Path(p).stem}.txt")
-            for p in img_paths
-        ]
 
     def load_image(self, i, rect_mode=True):
         im_rgb, (h0, w0), (h, w) = super().load_image(i, rect_mode=rect_mode)
@@ -204,16 +218,16 @@ class MidFusionValidator(DetectionValidator):
 
 
 # ==============================================================================
-# 3. DEĞERLENDİRME MOTORU
+# 4. DEĞERLENDİRME VE METRİK TOPLAMA MOTORU
 # ==============================================================================
 def evaluate_model(model_name, weight_path, yaml_path):
-    print(f"\n{'='*60}")
-    print(f"Resmi Validator ile Test Ediliyor: {model_name}")
-    print(f"{'='*60}")
+    print(f"\n{'='*65}")
+    print(f"Değerlendiriliyor: {model_name}")
+    print(f"{'='*65}")
 
     if not os.path.exists(weight_path):
         print(f"[UYARI] Ağırlık dosyası bulunamadı, atlanıyor: {weight_path}")
-        return None, None
+        return None, None, None, None
 
     name_lower = model_name.lower()
     is_unimodal = ("rgb" in name_lower or "ir" in name_lower) and ("fusion" not in name_lower)
@@ -233,16 +247,15 @@ def evaluate_model(model_name, weight_path, yaml_path):
         rect=True,
         half=torch.cuda.is_available(),
         conf=0.001,
-        iou=0.70,   # Ultralytics resmi validation IoU eşiği
+        iou=0.70,
         project=str(OUTPUT_DIR),
         name=model_name,
         exist_ok=True,
-        plots=True  # Karışıklık matrisi (Confusion Matrix) ve PR eğrilerini de üretir!
+        plots=True  # BoxPR_curve (AUC), BoxF1_curve, BoxP_curve, BoxR_curve ve confusion_matrix üretir
     )
 
     if is_unimodal:
-        # Standart 3 kanallı tekil YOLO modeli için
-        unimodal_yaml = OUTPUT_DIR / "data_unimodal.yaml"
+        unimodal_yaml = OUTPUT_DIR / f"data_{model_name.lower()}.yaml"
         img_folder = "images_ir" if "ir" in name_lower else "images"
         u_cfg = {
             "path": str(DATASET_DIR),
@@ -260,13 +273,14 @@ def evaluate_model(model_name, weight_path, yaml_path):
         res_obj = yolo_wrapper.val(**{k: v for k, v in val_args.items() if k != "model"})
         stats_dict = res_obj.results_dict
         speed_dict = res_obj.speed
-        class_ap50_list = res_obj.box.ap50
+        metrics_obj = res_obj
+        conf_matrix = res_obj.confusion_matrix.matrix.copy() if getattr(res_obj, "confusion_matrix", None) is not None else None
     else:
-        # 6 kanallı Mid-Fusion modelleri için
         validator = MidFusionValidator(args=val_args, modality="both")
         stats_dict = validator(model=model)
         speed_dict = validator.speed
-        class_ap50_list = validator.metrics.box.ap50
+        metrics_obj = validator.metrics
+        conf_matrix = validator.confusion_matrix.matrix.copy() if getattr(validator, "confusion_matrix", None) is not None else None
 
     p_all = float(stats_dict.get("metrics/precision(B)", 0.0))
     r_all = float(stats_dict.get("metrics/recall(B)", 0.0))
@@ -289,81 +303,132 @@ def evaluate_model(model_name, weight_path, yaml_path):
         "Params (M)": round(total_params, 2)
     }
 
-    class_ap50 = {"Model": model_name}
+    # Sınıf bazlı detaylı metrikler (mAP@50, Precision, Recall, F1)
+    class_ap50_row = {"Model": model_name}
+    detailed_class_rows = []
     for idx, cls_name in enumerate(CLASS_NAMES):
-        val = float(class_ap50_list[idx]) if idx < len(class_ap50_list) else 0.0
-        class_ap50[cls_name] = round(val, 4)
+        try:
+            p_c, r_c, ap50_c, ap_c = metrics_obj.box.class_result(idx)
+        except Exception:
+            p_c, r_c, ap50_c, ap_c = 0.0, 0.0, 0.0, 0.0
+        f1_c = 2 * (p_c * r_c) / (p_c + r_c + 1e-16)
+
+        class_ap50_row[cls_name] = round(float(ap50_c), 4)
+        detailed_class_rows.append({
+            "Model": model_name,
+            "Sınıf": cls_name,
+            "Precision": round(float(p_c), 4),
+            "Recall": round(float(r_c), 4),
+            "F1-Score": round(float(f1_c), 4),
+            "mAP@50": round(float(ap50_c), 4),
+            "mAP@50:95": round(float(ap_c), 4),
+        })
 
     del model, ckpt
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    return summary, class_ap50
+    return summary, class_ap50_row, detailed_class_rows, conf_matrix
 
 
 # ==============================================================================
-# 4. GRAFİKSEL KARŞILAŞTIRMA FONKSİYONLARI (300 DPI)
+# 5. TEZ KALİTESİNDE (300 DPI) KARŞILAŞTIRMA GRAFİKLERİ
 # ==============================================================================
-def plot_comparisons(df_summary, df_classes, output_dir):
-    sns.set_theme(style="whitegrid", font_scale=1.1)
+def plot_all_comparisons(df_summary, df_classes, conf_matrices, output_dir):
+    sns.set_theme(style="whitegrid", font_scale=1.05)
 
-    fig, ax = plt.subplots(figsize=(11, 6), dpi=300)
+    # --- GRAFİK 1: Genel Tespit Metrikleri (Ablation + Mimari Kıyas) ---
+    fig, ax = plt.subplots(figsize=(13, 6.5), dpi=300)
     metrics_to_plot = ["mAP@50", "mAP@50:95", "Precision", "Recall", "F1-Score"]
     df_melted = df_summary.melt(id_vars="Model", value_vars=metrics_to_plot, var_name="Metrik", value_name="Değer")
 
     barplot = sns.barplot(data=df_melted, x="Metrik", y="Değer", hue="Model", palette="Set2", ax=ax)
-    ax.set_title("Modellerin Genel Tespit Performansı Karşılaştırması", fontsize=14, fontweight="bold", pad=15)
-    ax.set_ylim(0, 1.08)
+    ax.set_title("Tekil Modalite (RGB/IR) ve Mid-Fusion Modellerinin Genel Performans Karşılaştırması", fontsize=13, fontweight="bold", pad=15)
+    ax.set_ylim(0, 1.12)
     ax.set_ylabel("Skor (0 - 1)")
     ax.set_xlabel("")
-    ax.legend(title="Model", bbox_to_anchor=(1.02, 1), loc="upper left")
+    ax.legend(title="Model", bbox_to_anchor=(1.01, 1), loc="upper left")
 
     for container in barplot.containers:
-        barplot.bar_label(container, fmt="%.3f", fontsize=8, padding=3, rotation=90)
+        barplot.bar_label(container, fmt="%.3f", fontsize=7, padding=3, rotation=90)
 
     plt.tight_layout()
     plt.savefig(output_dir / "1_genel_metrik_karsilastirmasi.png", dpi=300)
     plt.close()
 
-    fig, ax = plt.subplots(figsize=(9, 6), dpi=300)
+    # --- GRAFİK 2: Hız (FPS) vs Doğruluk (mAP@50) Denge Grafiği ---
+    fig, ax = plt.subplots(figsize=(10.5, 6.5), dpi=300)
     sns.scatterplot(
         data=df_summary, x="FPS", y="mAP@50", hue="Model",
-        size="Params (M)", sizes=(150, 500), palette="deep", ax=ax, legend="brief"
+        size="Params (M)", sizes=(160, 520), palette="deep", ax=ax, legend="brief"
     )
     for _, row in df_summary.iterrows():
         ax.annotate(
             f"{row['Model']}\n({row['mAP@50']:.3f} mAP | {row['FPS']} FPS)",
             (row["FPS"], row["mAP@50"]),
-            textcoords="offset points", xytext=(0, 12), ha="center", fontsize=9, fontweight="bold"
+            textcoords="offset points", xytext=(0, 12), ha="center", fontsize=8.5, fontweight="bold"
         )
-    ax.set_title("Doğruluk (mAP@50) vs. Çıkarım Hızı (FPS) Analizi", fontsize=14, fontweight="bold", pad=15)
-    ax.set_xlabel("Çıkarım Hızı (FPS)")
+    ax.set_title("Doğruluk (mAP@50) vs. Çıkarım Hızı (FPS) ve Model Boyutu Analizi", fontsize=13, fontweight="bold", pad=15)
+    ax.set_xlabel("Çıkarım Hızı (FPS - Frame Per Second)")
     ax.set_ylabel("mAP@50")
     ax.grid(True, linestyle="--", alpha=0.6)
     plt.tight_layout()
     plt.savefig(output_dir / "2_hiz_dogruluk_dengesi.png", dpi=300)
     plt.close()
 
-    fig, ax = plt.subplots(figsize=(11, 6), dpi=300)
+    # --- GRAFİK 3: Araç Sınıflarına Göre mAP@50 Karşılaştırması ---
+    fig, ax = plt.subplots(figsize=(13, 6.5), dpi=300)
     df_cls_melted = df_classes.melt(id_vars="Model", value_vars=CLASS_NAMES, var_name="Sınıf", value_name="mAP@50")
     cls_plot = sns.barplot(data=df_cls_melted, x="Sınıf", y="mAP@50", hue="Model", palette="Paired", ax=ax)
-    ax.set_title("Araç Sınıflarına Göre Model Başarım Karşılaştırması (mAP@50)", fontsize=14, fontweight="bold", pad=15)
-    ax.set_ylim(0, 1.08)
+    ax.set_title("Araç Sınıflarına Göre Model Başarım Karşılaştırması (mAP@50)", fontsize=13, fontweight="bold", pad=15)
+    ax.set_ylim(0, 1.12)
     ax.set_ylabel("mAP@50")
     ax.set_xlabel("Hedef Sınıflar")
-    ax.legend(title="Model", bbox_to_anchor=(1.02, 1), loc="upper left")
+    ax.legend(title="Model", bbox_to_anchor=(1.01, 1), loc="upper left")
 
     for container in cls_plot.containers:
-        cls_plot.bar_label(container, fmt="%.2f", fontsize=8, padding=3, rotation=90)
+        cls_plot.bar_label(container, fmt="%.2f", fontsize=7, padding=3, rotation=90)
 
     plt.tight_layout()
     plt.savefig(output_dir / "3_sinif_bazli_karsilastirma.png", dpi=300)
     plt.close()
 
+    # --- GRAFİK 4: Tüm Modellerin Normalize Edilmiş Karmaşıklık Matrisi (Confusion Matrix) ---
+    valid_cms = {k: v for k, v in conf_matrices.items() if v is not None}
+    if valid_cms:
+        n_models = len(valid_cms)
+        cols = 3
+        rows = (n_models + cols - 1) // cols
+        fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 5.2 * rows), dpi=300)
+        axes = np.array(axes).reshape(-1)
+        cm_labels = CLASS_NAMES + ["background"]
+
+        for idx, (m_name, cm) in enumerate(valid_cms.items()):
+            ax = axes[idx]
+            col_sums = cm.sum(axis=0, keepdims=True)
+            cm_norm = np.divide(cm, col_sums, out=np.zeros_like(cm, dtype=float), where=col_sums != 0)
+            sns.heatmap(
+                cm_norm, annot=True, fmt=".2f", cmap="Blues", vmin=0, vmax=1,
+                xticklabels=cm_labels, yticklabels=cm_labels, cbar=False, ax=ax,
+                annot_kws={"size": 8}
+            )
+            ax.set_title(m_name, fontsize=11, fontweight="bold")
+            ax.set_xlabel("Gerçek Sınıf (Ground Truth)", fontsize=9)
+            ax.set_ylabel("Tahmin Edilen Sınıf", fontsize=9)
+            ax.tick_params(axis='both', labelsize=8)
+
+        for j in range(idx + 1, len(axes)):
+            axes[j].axis("off")
+
+        plt.suptitle("Modellerin Normalize Edilmiş Karmaşıklık Matrisleri (Confusion Matrix)", fontsize=14, fontweight="bold", y=1.01)
+        plt.tight_layout()
+        plt.savefig(output_dir / "4_karmasiklik_matrisleri.png", dpi=300, bbox_inches="tight")
+        plt.close()
+
 
 # ==============================================================================
-# 5. ANA ÇALIŞTIRMA BLOĞU
+# 6. ANA ÇALIŞTIRMA BLOĞU
 # ==============================================================================
 if __name__ == "__main__":
     rgb_folder_name = "images" if (DATASET_DIR / "test" / "images").exists() else "images_rgb"
@@ -381,30 +446,36 @@ if __name__ == "__main__":
         yaml.dump(cfg, f, allow_unicode=True)
 
     all_summaries = []
-    all_class_results = []
+    all_class_ap50 = []
+    all_detailed_classes = []
+    conf_matrices = {}
 
     for model_name, weight_path in MODELS.items():
-        summary, class_res = evaluate_model(model_name, weight_path, yaml_path)
+        summary, class_ap50_row, detailed_rows, cm = evaluate_model(model_name, weight_path, yaml_path)
         if summary is not None:
             all_summaries.append(summary)
-            all_class_results.append(class_res)
+            all_class_ap50.append(class_ap50_row)
+            all_detailed_classes.extend(detailed_rows)
+            conf_matrices[model_name] = cm
 
     if all_summaries:
         df_summary = pd.DataFrame(all_summaries)
-        df_classes = pd.DataFrame(all_class_results)[["Model"] + CLASS_NAMES]
+        df_classes = pd.DataFrame(all_class_ap50)[["Model"] + CLASS_NAMES]
+        df_detailed = pd.DataFrame(all_detailed_classes)
 
-        print("\n" + "="*80)
-        print("GENEL MODEL KARŞILAŞTIRMA TABLOSU (RESMİ LETTERBOX & VALIDATOR)")
-        print("="*80)
+        print("\n" + "="*90)
+        print("NİHAİ MODEL VE ABLATION KARŞILAŞTIRMA TABLOSU")
+        print("="*90)
         print(df_summary.to_string(index=False))
 
-        print("\n" + "="*80)
+        print("\n" + "="*90)
         print("SINIF BAZLI mAP@50 KARŞILAŞTIRMA TABLOSU")
-        print("="*80)
+        print("="*90)
         print(df_classes.to_string(index=False))
 
         df_summary.to_csv(OUTPUT_DIR / "genel_sonuclar.csv", index=False)
-        df_classes.to_csv(OUTPUT_DIR / "sinif_bazli_sonuclar.csv", index=False)
+        df_classes.to_csv(OUTPUT_DIR / "sinif_bazli_map50.csv", index=False)
+        df_detailed.to_csv(OUTPUT_DIR / "sinif_bazli_detayli_metrikler.csv", index=False)
 
-        plot_comparisons(df_summary, df_classes, OUTPUT_DIR)
-        print(f"\nTüm tablolar, Confusion Matrix'ler ve 300 DPI grafikler kaydedildi:\n-> {OUTPUT_DIR}")
+        plot_all_comparisons(df_summary, df_classes, conf_matrices, OUTPUT_DIR)
+        print(f"\nTüm tablolar, PR/AUC eğrileri, Karmaşıklık Matrisleri ve 300 DPI grafikler kaydedildi:\n-> {OUTPUT_DIR}")
